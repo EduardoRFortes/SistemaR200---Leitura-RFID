@@ -1,42 +1,38 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include "R200.h" // Inclui sua biblioteca R200
+#include "R200.h" // Sua biblioteca R200
 
-// ======= CONFIGURAÇÕES DE REDE E MQTT ========
+// ======= CONFIGURAÇÕES DE REDE E MQTT (Mantenha as suas) ========
 const char* SSID = "nersec";
 const char* SENHA = "gremio123";
-
-const char* BROKER_MQTT = "172.22.48.33";  // IP do servidor MQTT
+const char* BROKER_MQTT = "172.22.48.70";
 const int PORTA_MQTT = 1883;
 
 // ===================================================================================
 // ======= IMPORTANTE: CLIENT_ID DEVE SER ÚNICO PARA CADA ESP32/MÓDULO! =======
-// Exemplo:
-// Para o Módulo 1: const char* CLIENT_ID = "ESP32_RFID_Client_01";
-// Para o M2:       const char* CLIENT_ID = "ESP32_RFID_Client_02";
-// Para o M3:       const char* CLIENT_ID = "ESP32_RFID_Client_03";
-const char* CLIENT_ID = "ESP32_RFID_Client_1"; // <-- MUDAR PARA CADA MÓDULO!
+const char* CLIENT_ID = "ESP32_RFID_Client_1"; // <-- MUDE PARA CADA MÓDULO! (ex: ESP32_RFID_Client_01)
 // ===================================================================================
 
 const char* TOPICO_MQTT = "/rfid/leituras";
 
-// ======= CONFIGURAÇÕES DE TEMPO PARA O SEQUENCIAMENTO ========
-// Estes valores devem ser os MESMOS em TODOS os 3 módulos
-const unsigned long T_DWELL_RF_ON = 150;      // Tempo que o RF fica LIGADO lendo tags (em ms)
-const unsigned long T_PAUSA_CURTA_ENTRE_ANTENAS = 5; // Pequena pausa para transição (em ms)
-const unsigned long T_SLOT_COMPLETO_MODULO = T_DWELL_RF_ON + T_PAUSA_CURTA_ENTRE_ANTENAS; // 155 ms
-const unsigned long T_ESPERA_OUTROS_MODULOS = T_SLOT_COMPLETO_MODULO * 2; // Espera pelos outros 2 módulos (310 ms)
+// ======= CONFIGURAÇÕES DE TEMPO PARA O SEQUENCIAMENTO (Adaptado para rfid.poll()) ========
+const unsigned long T_JANELA_ATIVA_MODULO = 150;       // Duração da "janela de oportunidade" de leitura deste módulo (ms)
+const unsigned long T_INTERVALO_POLL_NA_JANELA = 50; // A cada quantos ms chamar rfid.poll() DENTRO da janela ativa
+const unsigned long T_PAUSA_CURTA_POS_JANELA = 5;    // Pequena pausa após a janela ativa deste módulo (ms)
+
+const unsigned long T_SLOT_COMPLETO_MODULO = T_JANELA_ATIVA_MODULO + T_PAUSA_CURTA_POS_JANELA; // Ex: 150 + 5 = 155 ms
+const unsigned long T_ESPERA_OUTROS_MODULOS = T_SLOT_COMPLETO_MODULO * 2; // Espera pelos outros 2 módulos (Ex: 155 * 2 = 310 ms)
 
 // ======= OBJETOS GLOBAIS ========
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
-R200 rfid; // Instância da sua classe R200
+R200 rfid;
 
-// ======= VARIÁVEIS DE CONTROLE DE TEMPO (NÃO ALTERAR) ========
-// unsigned long lastPollTime = 0; // Não será mais usado como antes
+// ======= VARIÁVEIS DE CONTROLE DE TEMPO ========
+unsigned long ultimoPollNaJanela = 0;
 
-// ======= FUNÇÕES DE CONEXÃO ========
+// ======= FUNÇÕES DE CONEXÃO (Mantenha as suas) ========
 void conectarWiFi() {
   Serial.print("Conectando ao WiFi");
   WiFi.begin(SSID, SENHA);
@@ -57,111 +53,104 @@ void conectarMQTT() {
     } else {
       Serial.print(" Falha, rc=");
       Serial.print(mqttClient.state());
-      delay(1000); // Pequeno delay antes de tentar reconectar
+      delay(1000);
     }
   }
 }
 
-// ======= FUNÇÃO DE PUBLICAÇÃO MQTT ========
+// ======= FUNÇÃO DE PUBLICAÇÃO MQTT (Mantenha a sua) ========
 void publicarMQTT(const String& epc) {
   if (!mqttClient.connected()) {
-    conectarMQTT(); // Tenta reconectar se a conexão caiu
+    conectarMQTT();
   }
 
-  JsonDocument doc; // Cria um objeto JSON
+  JsonDocument doc;
   doc["epc"] = epc;
-  doc["timestamp"] = String(millis()); // Tempo desde o início do ESP32
-  doc["mqttId"] = CLIENT_ID; // Identificador único deste módulo
+  doc["timestamp"] = String(millis());
+  doc["mqttId"] = CLIENT_ID;
 
   String jsonString;
-  serializeJson(doc, jsonString); // Serializa o JSON para String
+  serializeJson(doc, jsonString);
 
-  mqttClient.publish(TOPICO_MQTT, jsonString.c_str()); // Publica no tópico MQTT
+  mqttClient.publish(TOPICO_MQTT, jsonString.c_str());
   Serial.println("Publicado via MQTT: " + jsonString);
 }
 
-// ======= SETUP: Executado uma única vez ao iniciar ========
+// ======= SETUP ========
 void setup() {
-  Serial.begin(115200); // Inicializa comunicação serial para debug
-  Serial.println(__FILE__ " " __DATE__); // Imprime nome do arquivo e data de compilação
+  Serial.begin(115200);
+  Serial.println("Iniciando: " __FILE__ " " __DATE__);
 
-  // Inicializa o módulo RFID R200
-  // Certifique-se de que os pinos 16 e 17 são os corretos para Serial2 no seu ESP32
   rfid.begin(&Serial2, 115200, 16, 17);
-  rfid.dumpModuleInfo(); // Exibe informações do módulo RFID
-  rfid.setTransmissionPower(0x1A); // Potência de transmissão (0x1A = 37dbm)
-  rfid.acquireTransmitPower(); // Adquire a potência atual (para verificar)
+  rfid.dumpModuleInfo();
+  rfid.setTransmissionPower(0x1A);
+  rfid.acquireTransmitPower();
 
-  // Conecta ao WiFi e MQTT
   conectarWiFi();
   conectarMQTT();
 
   // ===================================================================================
   // ======= DELAY INICIAL PARA ESCALONAMENTO (MUDAR PARA CADA MÓDULO!) ========
   // ===================================================================================
-  // Este delay garante que os módulos iniciem suas fases ativas em momentos diferentes.
-  // Você DEVE definir um valor diferente para cada um dos 3 módulos:
-  //
-  // MÓDULO 1 (Antena 1):
-  //   delay(0); // Ou simplesmente não coloque esta linha
-  //
-  // MÓDULO 2 (Antena 2):
-  //   delay(T_SLOT_COMPLETO_MODULO * 1); // delay(155);
-  //
-  // MÓDULO 3 (Antena 3):
-  //   delay(T_SLOT_COMPLETO_MODULO * 2); // delay(310);
+  // MÓDULO 1: delay(0); // (Ou simplesmente não coloque esta linha)
+  // MÓDULO 2: delay(T_SLOT_COMPLETO_MODULO * 1); // Ex: delay(155);
+  // MÓDULO 3: delay(T_SLOT_COMPLETO_MODULO * 2); // Ex: delay(310);
   // ===================================================================================
-
   // Exemplo para o MÓDULO 1 (sem delay inicial):
-  // delay(0); // Pode ser omitido
+  // delay(0); 
 
   // Exemplo para o MÓDULO 2 (descomente e use este no Módulo 2):
-  // delay(T_SLOT_COMPLETO_MODULO * 1);
+  // delay(T_SLOT_COMPLETO_MODULO * 1); 
 
   // Exemplo para o MÓDULO 3 (descomente e use este no Módulo 3):
-  // delay(T_SLOT_COMPLETO_MODULO * 2);
+  // delay(T_SLOT_COMPLETO_MODULO * 2); 
 
-  Serial.println("Sistema iniciado e escalonado.");
+  Serial.println("Sistema iniciado e escalonado (usando rfid.poll() repetido).");
 }
 
-// ======= LOOP: Executado repetidamente ========
+// ======= LOOP ========
 void loop() {
-  mqttClient.loop(); // Mantém a conexão MQTT ativa e processa mensagens pendentes
-  // rfid.loop(); // Não chame aqui fora do bloco de leitura ativa, pois pode interferir no timing
+  mqttClient.loop(); // Manter MQTT funcionando independentemente da fase
 
   // --- FASE ATIVA DE LEITURA PARA ESTE MÓDULO ---
-  Serial.println("Iniciando fase ativa de leitura...");
-  // Liga o modo de polling múltiplo (leitura contínua)
-  rfid.setMultiplePollingMode(true);
+  // Serial.println("LOOP: Iniciando Janela Ativa de Leitura..."); // Debug
+  unsigned long inicioJanelaAtiva = millis();
+  // Força o primeiro poll a acontecer imediatamente dentro da janela
+  ultimoPollNaJanela = inicioJanelaAtiva - T_INTERVALO_POLL_NA_JANELA; 
 
-  unsigned long inicioFaseAtiva = millis();
-  while (millis() - inicioFaseAtiva < T_DWELL_RF_ON) {
-    // Durante a fase ativa, chame rfid.loop() para processar as respostas do módulo
-    // e verificar se tags foram lidas.
-    rfid.loop();
-    if (rfid.epc.length() > 0) {
-      publicarMQTT(rfid.epc);
-      rfid.epc = ""; // Limpa o EPC para garantir que só publicamos novas leituras
+  while (millis() - inicioJanelaAtiva < T_JANELA_ATIVA_MODULO) {
+    mqttClient.loop(); // Manter MQTT funcionando
+    
+    // A função rfid.loop() da biblioteca R200 é chamada para processar respostas
+    // da serial. É importante chamá-la regularmente.
+    rfid.loop(); 
+
+    // Chamar rfid.poll() em intervalos dentro da janela ativa
+    if (millis() - ultimoPollNaJanela >= T_INTERVALO_POLL_NA_JANELA) {
+      // Serial.println("  Janela Ativa: Chamando rfid.poll()"); // Debug
+      rfid.poll(); // Envia CMD_SinglePollInstruction
+      ultimoPollNaJanela = millis();
     }
-    mqttClient.loop(); // É importante chamar mqttClient.loop() aqui também para manter a conexão ativa
-    delay(1); // Pequeno delay para permitir que o sistema operacional do ESP32 faça outras tarefas
-  }
 
+    // Após chamar rfid.poll(), chame rfid.loop() novamente para processar
+    // a resposta do single poll e potencialmente preencher rfid.epc
+    rfid.loop(); 
+    if (rfid.epc.length() > 0) {
+      // Serial.print("  Janela Ativa: TAG LIDA: "); Serial.println(rfid.epc); // Debug
+      publicarMQTT(rfid.epc);
+      rfid.epc = ""; // Limpa após publicar para não reenviar a mesma tag da mesma leitura
+    }
+    
+    delay(1); // Pequeno delay para ceder tempo ao processador, essencial se T_INTERVALO_POLL_NA_JANELA for curto
+  }
+  // Serial.println("LOOP: Fim da Janela Ativa de Leitura."); // Debug
   // --- FIM DA FASE ATIVA ---
-  // Desliga o modo de polling múltiplo
-  rfid.setMultiplePollingMode(false);
-  Serial.println("Fim da fase ativa de leitura.");
 
-  // Garante que qualquer última tag lida seja processada após desligar o RF
-  rfid.loop();
-  if (rfid.epc.length() > 0) {
-    publicarMQTT(rfid.epc);
-    rfid.epc = "";
-  }
+  // Pequena pausa após a janela ativa deste módulo (para garantir transição limpa)
+  delay(T_PAUSA_CURTA_POS_JANELA);
 
   // --- FASE INATIVA (ESPERA PELOS OUTROS MÓDULOS) ---
-  // Este delay faz com que este módulo espere enquanto os outros dois realizam suas leituras.
-  Serial.println("Iniciando fase de espera...");
+  // Serial.println("LOOP: Iniciando Fase de Espera..."); // Debug
   delay(T_ESPERA_OUTROS_MODULOS);
-  Serial.println("Fim da fase de espera.");
+  // Serial.println("LOOP: Fim da Fase de Espera."); // Debug
 }
