@@ -6,7 +6,11 @@
 // ======= CONFIGURAÇÕES DE REDE E MQTT (Mantenha as suas) ========
 const char* SSID = "nersec";
 const char* SENHA = "gremio123";
+<<<<<<< HEAD
 const char* BROKER_MQTT = "172.22.48.33";
+=======
+const char* BROKER_MQTT = "172.22.48.70";
+>>>>>>> origin/main
 const int PORTA_MQTT = 1883;
 
 // ===================================================================================
@@ -83,7 +87,11 @@ void setup() {
 
   rfid.begin(&Serial2, 115200, 16, 17);
   rfid.dumpModuleInfo();
+<<<<<<< HEAD
   rfid.setTransmissionPower(100);
+=======
+  rfid.setTransmissionPower(0x1A);
+>>>>>>> origin/main
   rfid.acquireTransmitPower();
 
   conectarWiFi();
