@@ -87,11 +87,7 @@ void setup() {
 
   rfid.begin(&Serial2, 115200, 16, 17);
   rfid.dumpModuleInfo();
-<<<<<<< HEAD
   rfid.setTransmissionPower(100);
-=======
-  rfid.setTransmissionPower(0x1A);
->>>>>>> origin/main
   rfid.acquireTransmitPower();
 
   conectarWiFi();
